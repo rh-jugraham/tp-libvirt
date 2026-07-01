@@ -724,6 +724,237 @@ nbdsh -u nbd+unix:///?socket=/tmp/sock -c 'h.zero (655360, 262144, 0)'
             if expected_msg not in hash_warning_msg:
                 test.fail('Expected warning "%s" not found in stderr: %s' % (expected_msg, hash_warning_msg))
 
+    def check_blocksize_constraints():
+        expected_fields = params_get(params, "expected_fields").split()
+        cmd_data = "nbdkit data base64=MTIz size=1M --run 'nbdinfo \"$uri\"'"
+        cmd_memory = "nbdkit memory 10G --run 'nbdinfo \"$uri\"'"
+        cmd_sparse_random = "nbdkit sparse-random size=1T --run 'nbdinfo \"$uri\"'"
+
+        with tempfile.TemporaryDirectory(prefix="nbdkit_floppy_") as floppy_dir:
+            cmd_floppy = "nbdkit floppy %s --run 'nbdinfo \"$uri\"'" % floppy_dir
+            for cmd_str in [cmd_data, cmd_memory, cmd_floppy, cmd_sparse_random]:
+                result = process.run(cmd_str, shell=True, ignore_status=True)
+                cmd_output = (result.stdout_text + result.stderr_text).strip()
+                for field in expected_fields:
+                    if field not in cmd_output:
+                        test.fail('Expected field "%s" not found in export output: %s' % (field, cmd_output))
+
+    def test_nbdkit_instance_name():
+        from subprocess import Popen, TimeoutExpired
+
+        # Define our ports and a log file path within the test's debug directory
+        instances = [
+            {"name": "server-gold", "port": 10809},
+            {"name": "server-silver", "port": 10810}
+        ]
+        log_path = os.path.join(data_dir.get_tmp_dir(), "nbdkit_debug.log")
+
+        # Store the Popen objects here
+        handles = []
+        try:
+            with open(log_path, "w") as log_file:
+                for inst in instances:
+                    LOG.info(f"Starting nbdkit instance: {inst['name']}")
+
+                    # Construct the command
+                    # --foreground: Keeps it attached so we can redirect output easily
+                    # --debug: Required to see the instance name in logs
+                    cmd = [
+                        "nbdkit", "-f", "-v",
+                        "--name", inst['name'],
+                        "--port", str(inst['port']),
+                        "memory", "10M"
+                    ]
+                    # Start nbdkit as a background process, piping stderr to our log file
+                    p = Popen(cmd, stderr=log_file, stdout=log_file)
+                    handles.append((inst, p))
+
+            for inst, p in handles:
+                if p.poll() is not None:
+                    test.fail(f"nbdkit {inst['name']} failed to start! Check {log_path}")
+
+            # Allow nbdkit instances time to start listening
+            import time
+            time.sleep(1)
+
+            # Trigger activity with qemu-io
+            for inst in instances:
+                LOG.info(f"Writing to {inst['name']} on port {inst['port']}")
+                qemu_cmd = f"qemu-io -f raw nbd://localhost:{inst['port']} -c \'write 0 1M\'"
+
+                result = process.run(qemu_cmd, shell=True)
+                if result.exit_status != 0:
+                    test.fail(f"qemu-io failed for {inst['name']}")
+
+            # VALIDATION: Check the log file for the specific instance names
+            with open(log_path, 'r') as f:
+                log_content = f.read()
+
+                for inst in instances:
+                    # Look for the debug pattern -> nbdkit[name]: debug: ...
+                    expected_tag = f"nbdkit[{inst['name']}]: debug:"
+                    if expected_tag not in log_content:
+                        test.fail(f"Instance name '{inst['name']}' was not found in debug logs!")
+                    LOG.info(f"Validated instance {inst['name']} appears in the debug logs")
+        finally:
+            # Cleanup: Kill the processes
+            LOG.info("Cleanup: Kill the processes")
+            for _, p in handles:
+                if p.poll() is None:
+                    p.terminate()
+                    try:
+                        # Wait up to 5 seconds for it to exit
+                        p.wait(timeout=5)
+                    except TimeoutExpired:
+                        # Force kill if it's being stubborn
+                        p.kill()
+
+    def test_count_filter():
+        # p is our SubProcess object
+        p = None
+        try:
+            LOG.info("Starting nbdkit")
+            # Define the command.
+            cmd = "nbdkit -f -v memory 10M --filter=count"
+
+            # Instantiate the SubProcess object
+            # Note: We pass the LOG so it knows where to send output
+            p = process.SubProcess(cmd, shell=True, logger=LOG)
+
+            # Start it in the background
+            p.start()
+
+            # Check if the process actually started (has a PID)
+            if not p.get_pid():
+                test.fail("nbdkit failed to start!")
+
+            # Allow nbdkit instance time to start listening
+            import time
+            time.sleep(1)
+
+            # Trigger activity with qemu-io (Synchronous run is fine here)
+            LOG.info("Writing data to nbdkit")
+            qemu_cmd = "qemu-io -f raw nbd://localhost -c 'write 0 1M' -c 'read 0 1M' -c 'write -z 1M 1M' -c 'discard 0 1M'"
+            result = process.run(qemu_cmd, shell=True)
+            if result.exit_status != 0:
+                test.fail(f"qemu-io failed with status {result.exit_status}")
+
+            # VALIDATION: Check the captured output
+            # SubProcess captures stdout and stderr separately as bytes
+            log_content = (p.get_stdout() + p.get_stderr()).decode('utf-8', errors='replace')
+            LOG.info(f"Captured output: {log_content}")
+
+            expected_patterns = [
+                "count: pwrite count=1048576",
+                "count: pread count=1048576",
+                "count: zero count=1048576",
+                "count: trim count=1048576"
+            ]
+            for pattern in expected_patterns:
+                if pattern not in log_content:
+                    # We show the log content to help debug why it failed
+                    test.fail(f"'{pattern}' was not found in logs!")
+                LOG.info(f"Pattern '{pattern}' found.")
+        finally:
+            # Cleanup using the class methods
+            if p and p.poll() is None:
+                LOG.info("Cleanup: Stopping nbdkit process")
+                # stop() is better than terminate() here as it handles the wait() logic
+                p.stop(timeout=5)
+
+    def test_data_plugin_supports_base64_in_format_string():
+        import base64
+        test_state = params_get(params, "test_state")
+        if test_state == "positive":
+            # Prepare the data
+            original_text = b"nbdkit-test123"
+            # Encode bytes to a base64 string
+            b64_input = base64.b64encode(original_text).decode()
+            cmd_str = f"nbdkit -U - data \'base64:{b64_input}\' --run 'nbdcopy $uri -'"
+            # Execute command
+            result = process.run(cmd_str, shell=True, ignore_status=True)
+            # Result.stdout contains the raw binary output from nbdcopy
+            cmd_output = result.stdout
+            if original_text not in cmd_output:
+                test.fail(f"Base64 decoding failed. Expected {original_text!r}, got {cmd_output!r}")
+        elif test_state == "negative":
+            # Negative scenario - Check with invalid value
+            invalid_b64 = "base64:SGVsbG8@@@"
+            cmd_str = f"nbdkit -U - data \'{invalid_b64}\' --run 'nbdcopy $uri -'"
+            # Execute command
+            result = process.run(cmd_str, shell=True, ignore_status=True)
+            # Verify the error message
+            cmd_output = result.stderr_text
+            err_msg = params_get(params, "expected_err_msg")
+            if err_msg not in cmd_output:
+                test.fail(f"Error message - \'{err_msg}\' not appeared.")
+
+    def test_nbd_data_integrity():
+        # --- Configuration ---
+        SOCKET = "/tmp/test.sock"
+        IMG_PATH = os.path.join(data_dir.get_tmp_dir(), "test.img")
+        IMAGE_SIZE = "1G"
+        p = None
+        try:
+            LOG.info(f"Prepare {IMAGE_SIZE} image file")
+            cmd = f"truncate -s {IMAGE_SIZE} {IMG_PATH}"
+            process.run(cmd, shell=True, ignore_status=True)
+            if os.path.exists(SOCKET):
+                os.remove(SOCKET)
+
+            LOG.info("Starting nbdkit server in background")
+            cmd = f"nbdkit -D file.zero=1 -U  {SOCKET} file {IMG_PATH}"
+            p = process.SubProcess(cmd, shell=True, logger=LOG)
+            p.start()
+            # Check if the process actually started (has a PID)
+            if not p.get_pid():
+                test.fail("nbdkit failed to start!")
+
+            # Wait for the socket file to appear
+            import time
+            time.sleep(1)
+
+            test_state = params_get(params, "test_state")
+            if test_state == "positive":
+                LOG.info("Testing nbdcopy with 32M")
+                cmd = f"nbdcopy --request-size=32M /dev/zero nbd+unix:///?socket={SOCKET}"
+                result = process.run(cmd, shell=True, ignore_status=True)
+                exp_warn = "No space left on device"
+                if exp_warn not in result.stderr_text:
+                    test.fail(f"Expected warning {exp_warn}, got {result.stderr_text}")
+
+                LOG.info("Verification (Compare with /dev/zero)")
+                cmd = f"nbdcopy nbd+unix:///?socket={SOCKET} - | cmp -n {IMAGE_SIZE} - /dev/zero"
+                result = process.run(cmd, shell=True, ignore_status=True)
+
+                if result.exit_status != 0:
+                    test.fail(f"Check Failed: Mismatch found! {result.stderr_text}")
+
+                LOG.info("Verification (MD5 Hash Check)")
+                # Pipe the output directly into a hash to save memory
+                hash_cmd = f"nbdcopy nbd+unix:///?socket={SOCKET} - | head -c {IMAGE_SIZE} | md5sum"
+                result = process.run(hash_cmd, shell=True, ignore_status=True)
+                actual_md5 = result.stdout_text
+                result = process.run("head -c 1G /dev/zero | md5sum", shell=True, ignore_status=True)
+                expected_md5 = result.stdout_text
+                if actual_md5 != expected_md5:
+                    test.fail("[FAILURE] Data corruption detected.")
+            elif test_state == "negative":
+                LOG.info("Testing nbdcopy with 128M (Expected Failure)")
+                cmd = f"nbdcopy --request-size=128M /dev/zero nbd+unix:///?socket={SOCKET}"
+                result = process.run(cmd, shell=True, ignore_status=True)
+                err_msg = "must be a power of 2 within 4096-33554432: 128M"
+                if err_msg not in result.stderr_text:
+                    test.fail(f"Expected warning {err_msg}, got {result.stderr_text}")
+        finally:
+            # Cleanup using the class methods
+            if p and p.poll() is None:
+                LOG.info("Cleanup: Stopping nbdkit process")
+                # stop() is better than terminate() here as it handles the wait() logic
+                p.stop(timeout=5)
+            if os.path.exists(SOCKET):
+                os.remove(SOCKET)
+
     if version_required and not multiple_versions_compare(
             version_required):
         test.cancel("Testing requires version: %s" % version_required)
@@ -800,5 +1031,15 @@ nbdsh -u nbd+unix:///?socket=/tmp/sock -c 'h.zero (655360, 262144, 0)'
         check_curl_time_option()
     elif checkpoint == 'check_blkhash_option':
         check_blkhash_option()
+    elif checkpoint == 'blocksize_constraints':
+        check_blocksize_constraints()
+    elif checkpoint == 'test_nbdkit_instance_name':
+        test_nbdkit_instance_name()
+    elif checkpoint == 'test_count_filter':
+        test_count_filter()
+    elif checkpoint == 'test_data_plugin_supports_base64_in_format_string':
+        test_data_plugin_supports_base64_in_format_string()
+    elif checkpoint == 'check_data_integrity':
+        test_nbd_data_integrity()
     else:
         test.error('Not found testcase: %s' % checkpoint)
