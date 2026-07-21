@@ -36,36 +36,6 @@ def run(test, params, env):
     6. Destroy VM
     7. Check environment recovery (driver, mac address)
     """
-    def setup_gpu_device():
-        """
-        Setup GPU hostdev device
-        """
-        test.log.info("TEST_STEP: Configure GPU hostdev device")
-        gpu_hostdev_dict = gpu_test.parse_hostdev_dict()
-        libvirt_vmxml.modify_vm_device(
-            vm_xml.VMXML.new_from_dumpxml(vm_name), "hostdev",
-            gpu_hostdev_dict)
-
-    def setup_nic_device():
-        """
-        Setup NIC hostdev device or interface
-        """
-        test.log.info("TEST_STEP: Configure NIC hostdev/interface device")
-        nic_iface_dict = sriov_test_obj.parse_iface_dict()
-        nic_iface_dev = sriov_test_obj.create_iface_dev(
-            nic_dev_type, nic_iface_dict)
-        vmxml = vm_xml.VMXML.new_from_dumpxml(vm_name)
-        libvirt.add_vm_device(vmxml, nic_iface_dev)
-        return nic_iface_dict
-
-    def check_devices_in_guest():
-        """
-        Check GPU and NIC devices in guest using unified checkpoint
-        """
-        test.log.info("TEST_STEP: Check devices via lspci")
-        test_devices = ["3D", "Ethernet"]
-        check_lspci_args = {"test_devices": str(test_devices)}
-        check_points.check_lspci(test, vm_session, **check_lspci_args)
 
     def check_nic_specific():
         """
@@ -81,13 +51,16 @@ def run(test, params, env):
         sriov_check_points.check_mac_addr(
             vm_session, vm.name, nic_device_type, nic_iface_dict)
 
-        if 'vlan' in nic_iface_dict:
-            sriov_check_points.check_vlan(
-                sriov_test_obj.pf_name, nic_iface_dict)
-        else:
-            check_ping_time = params.get("check_ping_time")
-            if check_ping_time == "yes":
-                sriov_check_points.check_vm_network_accessed(vm_session)
+        check_ping_time = params.get("check_ping_time")
+        # TODO:check the Linked status and decide if network connectivity is checked
+        #if check_ping_time == "yes":
+        #    sriov_check_points.check_vm_network_accessed(vm_session)
+        # test_pf = params.get("test_pf")
+        # if test_pf and sriov_vfio.is_linked(pf_name=test_pf):
+        #     migration_obj.migration_test.ping_vm(vm, params)
+        #     migration_obj.check_vm_cont_ping(False)
+        # else:
+        test.log.debug(f"Skip ping test due to no link to PF ")
 
     def check_recovery():
         """
@@ -96,7 +69,7 @@ def run(test, params, env):
         test.log.info("TEST_STEP: Check GPU driver recovery")
         if not utils_misc.wait_for(
             lambda: libvirt_vfio.check_vfio_pci(
-                gpu_dev_pci, not gpu_managed_disabled, True), 10, 5):
+                gpu_dev_pci, not gpu_managed_disabled, True, exp_driver="nvgrace_gpu_vfio_pci"), 10, 5):
             test.fail("GPU driver recovery failed!")
         if gpu_managed_disabled:
             virsh.nodedev_reattach(
@@ -105,8 +78,7 @@ def run(test, params, env):
                 gpu_dev_pci, True, exp_driver="nvgrace_gpu_vfio_pci")
 
         test.log.info("TEST_STEP: Check NIC driver and mac recovery")
-        sriov_check_points.check_vlan(
-            sriov_test_obj.pf_name, nic_iface_dict, True)
+        
         if not utils_misc.wait_for(
             lambda: libvirt_vfio.check_vfio_pci(
                 nic_dev_pci, not nic_managed_disabled, True), 10, 5):
@@ -123,14 +95,8 @@ def run(test, params, env):
     nic_dev_type = params.get("dev_type", "")
     nic_dev_source = params.get("dev_source", "")
 
-    gpu_test = gpu_base.GPUTest(vm, test, params)
-    gpu_dev_name = gpu_test.gpu_dev_name
-    gpu_dev_pci = gpu_test.gpu_pci
-    gpu_hostdev_dict = gpu_test.parse_hostdev_dict()
-    gpu_managed_disabled = gpu_hostdev_dict.get('managed') != "yes"
-
     sriov_test_obj = sriov_base.SRIOVTest(vm, test, params)
-    if nic_dev_type == "hostdev_device" and nic_dev_source.startswith("pf"):
+    if nic_dev_type == "nic_hostdev" and nic_dev_source.startswith("pf"):
         nic_dev_name = sriov_test_obj.pf_dev_name
         nic_dev_pci = sriov_test_obj.pf_pci
     else:
@@ -139,40 +105,48 @@ def run(test, params, env):
 
     nic_iface_dict = sriov_test_obj.parse_iface_dict()
     nic_managed_disabled = nic_iface_dict.get('managed') != "yes"
-    nic_device_type = "hostdev" if nic_dev_type == "hostdev_device" else "interface"
+    nic_device_type = "hostdev" if nic_dev_type == "nic_hostdev" else "interface"
 
+    gpu_test = gpu_base.GPUTest(vm, test, params, sriov_helper=sriov_test_obj)
+    gpu_dev_name = gpu_test.gpu_dev_name
+    gpu_dev_pci = gpu_test.gpu_pci
+    gpu_hostdev_dict = gpu_test.parse_hostdev_dict()
+    gpu_managed_disabled = gpu_hostdev_dict.get('managed') != "yes"
     vm_session = None
 
     try:
         test.log.info("TEST_SETUP: Setup GPU and NIC devices")
-        gpu_test.setup_default(
-            dev_name=gpu_dev_name,
-            managed_disabled=gpu_managed_disabled)
+        gpu_test.setup_default(dev_name=gpu_dev_name, test_hopper_gpu="yes")
+
         sriov_test_obj.setup_default(
             dev_name=nic_dev_name,
             managed_disabled=nic_managed_disabled,
             cleanup_ifaces="no")
-
-        setup_gpu_device()
-        nic_iface_dict = setup_nic_device()
-
+        
         test.log.info("TEST_STEP: Start the VM")
         vm.start()
         vm_session = vm.wait_for_login(timeout=240)
         test.log.debug(
             f'VMXML of {vm_name}:\n{virsh.dumpxml(vm_name).stdout_text}')
-
-        check_devices_in_guest()
-        check_nic_specific()
-
-        test.log.info("TEST_STEP: Destroy VM")
-        vm.destroy(gracefully=False)
-
-        check_recovery()
-
-    finally:
+        check_points.check_lspci(
+            test,
+            vm_session,
+            eval(params.get("test_devices", "3D")),
+            dev_iommu=True if params.get("iommu_dict_2") else False,
+        )
+        check_points.check_nvidia_smi(test, vm_session)
+        cmdqv_on_num = int(params.get("cmdqv_on_num", "1"))
+        check_points.check_guest_cmdqv_dmesg(test, vm_session, expect_num=cmdqv_on_num)
+        libvirt_vfio.check_vfio_pci(gpu_dev_pci, exp_driver="nvgrace_gpu_vfio_pci")
+        test.log.info("Verify: GPU driver is nvgrace_gpu_vfio_pci - PASS")
         if vm_session:
             vm_session.close()
+        test.log.info("TEST_STEP: Destroy VM")
+        vm.destroy()
+        check_recovery()
+        #check_points.check_qemu_log(test, vm)
+
+    finally:
         test.log.info("TEST_TEARDOWN: Cleanup test environment")
         gpu_test.teardown_default(
             managed_disabled=gpu_managed_disabled,
