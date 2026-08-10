@@ -86,6 +86,9 @@ def check_lspci(test, vm_session, test_devices, dev_iommu=True, expect_nic_exist
     :param vm: vm object
     :param status_error: True if expect not existing, otherwise False
     """
+    if not utils_package.package_install(["pciutils"], vm_session):
+        test.error("Unable to install pciutils in guest!")
+
     def _check_lspci(pci_addr, is_gpu=True, dev_iommu=True):
         status, lspci_detail = vm_session.cmd_status_output("lspci -vvs %s" % pci_addr)
         test.log.debug("The lspci info for device %s in the guest:\n%s", pci_addr, lspci_detail)

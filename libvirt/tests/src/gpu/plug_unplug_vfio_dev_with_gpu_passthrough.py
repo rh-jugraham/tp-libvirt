@@ -121,7 +121,7 @@ def run(test, params, env):
 
         test.log.info("TEST_STEP: Start the VM")
         vm.start()
-        vm_session = vm.wait_for_serial_login(timeout=240)
+        vm_session = vm.wait_for_login(timeout=240)
         test.log.debug(
             f'VMXML of {vm_name}:\n{virsh.dumpxml(vm_name).stdout_text}')
 
@@ -210,6 +210,7 @@ def run(test, params, env):
 
     try:
         test.log.info("TEST_SETUP: Setup GPU and NIC devices")
+        gpu_test.setup_nvgrace_host_driver()
         gpu_test.setup_default(dev_name=gpu_dev_name, test_hopper_gpu="yes", plug_nic=True)
 
         sriov_test_obj.setup_default(

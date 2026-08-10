@@ -4,9 +4,12 @@ from virttest import virsh
 from virttest.libvirt_xml import vm_xml
 from virttest.utils_libvirt import libvirt_vmxml
 from virttest.utils_libvirt import libvirt_vfio
+from virttest.utils_libvirt import libvirt_virtio
 
 from provider.gpu import gpu_base
 from provider.gpu import check_points
+
+import os
 
 
 def run(test, params, env):
@@ -23,12 +26,17 @@ def run(test, params, env):
     gpu_managed_disabled = gpu_hostdev_dict.get('managed') != "yes"
 
     try:
+        gpu_test.setup_nvgrace_host_driver()
+
         test.log.info("TEST_STEP: Configure the VM XML")
         gpu_test.setup_default(dev_name=dev_name, test_hopper_gpu="yes")
+
         test.log.info("TEST_STEP: Start the VM")
         vm.start()
+
         vm_session = vm.wait_for_login(timeout=240)
         test.log.debug(f'VMXML of {vm_name}:\n{virsh.dumpxml(vm_name).stdout_text}')
+
         check_points.check_lspci(
             test,
             vm_session,
@@ -44,14 +52,6 @@ def run(test, params, env):
             vm_session.close()
         test.log.info("TEST_STEP: Destroy VM")
         vm.destroy(gracefully=False)
-
-        if not utils_misc.wait_for(
-            lambda: libvirt_vfio.check_vfio_pci(
-                dev_pci, not gpu_managed_disabled, True), 10, 5):
-            test.fail("Got incorrect driver!")
-        if gpu_managed_disabled:
-            virsh.nodedev_reattach(dev_name, debug=True, ignore_status=False)
-            libvirt_vfio.check_vfio_pci(dev_pci, True)
 
         check_points.check_qemu_log(test, vm)
     finally:

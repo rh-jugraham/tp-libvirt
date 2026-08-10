@@ -67,9 +67,10 @@ def run(test, params, env):
         Check environment recovery after VM destroy
         """
         test.log.info("TEST_STEP: Check GPU driver recovery")
+        test.log.info("running: gpu_dev_pci, gpu_managed_disabled, exp_driver='nvgrace_gpu_vfio_pci'), 10, 5):")
         if not utils_misc.wait_for(
             lambda: libvirt_vfio.check_vfio_pci(
-                gpu_dev_pci, not gpu_managed_disabled, True, exp_driver="nvgrace_gpu_vfio_pci"), 10, 5):
+                gpu_dev_pci, gpu_managed_disabled, exp_driver="nvgrace_gpu_vfio_pci"), 10, 5):
             test.fail("GPU driver recovery failed!")
         if gpu_managed_disabled:
             virsh.nodedev_reattach(
@@ -116,6 +117,7 @@ def run(test, params, env):
 
     try:
         test.log.info("TEST_SETUP: Setup GPU and NIC devices")
+        gpu_test.setup_nvgrace_host_driver()
         gpu_test.setup_default(dev_name=gpu_dev_name, test_hopper_gpu="yes")
 
         sriov_test_obj.setup_default(

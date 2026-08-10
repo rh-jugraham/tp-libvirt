@@ -155,8 +155,10 @@ class GPUTest(object):
         :param vm_session: vm's session
         """
         gpu_pci = get_gpu_pci(session=vm_session)
+        self.test.log.info(f"DEBUG: gpu_pci from get_gpu_pci = {gpu_pci}")
         s, o = vm_session.cmd_status_output("nvidia-smi -q")
-        if s or not re.search(gpu_pci, o):
+        self.test.log.info(f"DEBUG: nvidia-smi status={s}, output contains: {o[:200]}")
+        if s or not re.search(gpu_pci, o, re.IGNORECASE):
             self.test.fail("Failed to run nvidia-smi command. Status: %s, output: %s."
                            % (s, o))
 
@@ -167,8 +169,11 @@ class GPUTest(object):
         :param vm_session: vm session object
         :local_rpm: Install the driver using local rpm
         """
-        pkgs = ["gcc", "kernel*headers*", "kernel*devel*"]
-        if not utils_package.package_install(pkgs, vm_session):
+        # Remove any pre-existing broken CUDA repo configs
+        vm_session.cmd("rm -f /etc/yum.repos.d/cuda*.repo || true")
+
+        pkgs = ["gcc", "kernel-headers", "kernel-devel", "kernel-64k-devel"]
+        if not utils_package.package_install(pkgs, vm_session, timeout=1200):
             self.test.error(f"Unable to install {pkgs} in guest!")
         arch = platform.machine()
         if local_rpm:
@@ -313,6 +318,36 @@ class GPUTest(object):
             sync_vm=False
         )
         return vmxml
+    
+    def setup_nvgrace_host_driver(self):
+
+        self.test.log.info("TEST_SETUP: Remove nouveau and load nvgrace drivers")
+        utils_misc.cmd_status_output("modprobe -r nouveau", ignore_status=True)
+        utils_misc.cmd_status_output("modprobe nvgrace-gpu-vfio-pci")
+        utils_misc.cmd_status_output("modprobe nvgrace_egm")
+
+        # Check if GPU is already bound to the correct driver
+        gpu_info = get_gpus_info()
+        current_driver = gpu_info.get(self.gpu_pci, {}).get('driver')
+
+        if current_driver != 'nvgrace_gpu_vfio_pci':
+            # Get the GPU vendor:device ID dynamically
+            gpu_id = gpu_info.get(self.gpu_pci, {}).get('ID')
+            if not gpu_id:
+                self.test.error(f"Unable to get vendor:device ID for GPU {self.gpu_pci}")
+
+            self.test.log.info(f"TEST_SETUP: Binding GPU {self.gpu_pci} (ID: {gpu_id}) to nvgrace-gpu-vfio-pci via new_id")
+            result = utils_misc.cmd_status_output(f"sh -c \"echo '{gpu_id}' > /sys/bus/pci/drivers/nvgrace_gpu_vfio_pci/new_id\"")
+
+            # Verify binding succeeded
+            gpu_info = get_gpus_info()
+            new_driver = gpu_info.get(self.gpu_pci, {}).get('driver')
+            if new_driver != 'nvgrace_gpu_vfio_pci':
+                self.test.error(f"GPU driver binding failed. Expected nvgrace_gpu_vfio_pci, got {new_driver}")
+            self.test.log.info(f"GPU successfully bound to nvgrace_gpu_vfio_pci")
+        else:
+            self.test.log.info(f"GPU already bound to nvgrace_gpu_vfio_pci")
+
 
     def prepare_guest_xml(self, plug_nic=False):
 

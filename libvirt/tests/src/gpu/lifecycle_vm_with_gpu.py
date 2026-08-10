@@ -19,19 +19,24 @@ def run(test, params, env):
     virsh_args = {'ignore_status': False, 'debug': True}
     unsupported_error = params.get("unsupported_error")
     gpu_test = gpu_base.GPUTest(vm, test, params)
-    hostdev_dict = gpu_test.parse_hostdev_dict()
+    dev_name = gpu_test.gpu_dev_name
+    gpu_hostdev_dict = gpu_test.parse_hostdev_dict()
+    gpu_managed_disabled = gpu_hostdev_dict.get('managed') != "yes"
 
     try:
-        gpu_test.setup_default()
-        libvirt_vmxml.modify_vm_device(
-                vm_xml.VMXML.new_from_dumpxml(vm.name), "hostdev",
-                hostdev_dict)
+        gpu_test.setup_nvgrace_host_driver()
+        gpu_test.setup_default(dev_name=dev_name, test_hopper_gpu="yes")
         test.log.info("TEST_STEP: Start the VM")
         vm.start()
         test.log.debug(f'VMXML of {vm_name}:\n{virsh.dumpxml(vm_name).stdout_text}')
         gpu_test.check_gpu_dev(vm)
         vm_session = vm.wait_for_login()
         gpu_test.install_latest_driver(vm_session)
+
+        test.log.info("TEST_STEP: Reboot VM to load new NVIDIA kernel modules")
+        vm.reboot(timeout=1200)
+        vm_session = vm.wait_for_login(timeout=1200)
+
         gpu_test.nvidia_smi_check(vm_session)
         vm_session.close()
 
@@ -73,4 +78,7 @@ def run(test, params, env):
         gpu_test.check_gpu_dev(vm)
 
     finally:
-        gpu_test.teardown_default()
+        gpu_test.teardown_default(
+            managed_disabled=gpu_managed_disabled,
+            dev_name=dev_name
+        )
