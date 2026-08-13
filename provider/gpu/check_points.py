@@ -135,7 +135,7 @@ def check_nvidia_smi(test, vm_session):
     :param vm_session: vm's session
     """
     status, output = vm_session.cmd_status_output("nvidia-smi")
-    if status or not re.search("CUDA Version:", output):
+    if status or not re.search(r"CUDA.*Version:", output):
         test.fail("Failed to run nvidia-smi command. Status: %s, output: %s."
                   % (status, output))
     test.log.debug("Verify nvdia-smi works well - PASS")

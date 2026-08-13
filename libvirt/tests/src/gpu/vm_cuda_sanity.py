@@ -3,6 +3,7 @@ import re
 
 from virttest import utils_misc
 from virttest import virsh
+from virttest import utils_package
 
 from virttest.libvirt_xml import vm_xml
 from virttest.utils_libvirt import libvirt_vmxml
@@ -79,6 +80,8 @@ def run(test, params, env):
         if o:
             test.log.warn(f"NUMA setup warning found: {o}")
 
+        if not utils_package.package_install(["numactl"], vm_session):
+            test.error("Unable to install numactl in guest!")
         s, o = vm_session.cmd_status_output("numactl --hardware")
         test.log.info(f"NUMA nodes: {o}")
 
@@ -92,7 +95,7 @@ def run(test, params, env):
         vm_session.cmd(f"sed -i 's/add_subdirectory(9_CUDA_Tile)/#add_subdirectory(9_CUDA_Tile)/' /root/cuda-samples/cpp/CMakeLists.txt || true")
         vm_session.cmd(f"sed -i 's/add_subdirectory(UnifiedMemoryStreams)/#add_subdirectory(UnifiedMemoryStreams)/' /root/cuda-samples/Samples/0_Introduction/CMakeLists.txt || true")
         vm_session.cmd(f"cd /root/cuda-samples/build && export PATH=$PATH:/usr/local/cuda/bin/ && cmake -DCMAKE_CUDA_ARCHITECTURES=native -DCMAKE_CXX_STANDARD=17 -DCMAKE_CXX_STANDARD_REQUIRED=ON ..", timeout=600)
-        vm_session.cmd(f"cd /root/cuda-samples/build && make -j 8", timeout=1200)
+        vm_session.cmd(f"cd /root/cuda-samples/build && make -j 64", timeout=1200)
 
         test.log.info("TEST_STEP: Run cuda sanity tests")
         if cuda_tests:

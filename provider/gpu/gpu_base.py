@@ -53,6 +53,8 @@ def get_gpus_info(session=None):
 
     """
     dev_info = {}
+    if not utils_package.package_install(["pciutils"], session):
+        raise exceptions.TestError("Unable to install pciutils!")
     status, output = utils_misc.cmd_status_output(
         "lspci -D -nn|awk '/3D controller/'",
         shell=True, session=session
@@ -172,7 +174,7 @@ class GPUTest(object):
         # Remove any pre-existing broken CUDA repo configs
         vm_session.cmd("rm -f /etc/yum.repos.d/cuda*.repo || true")
 
-        pkgs = ["gcc", "kernel-headers", "kernel-devel", "kernel-64k-devel"]
+        pkgs = ["gcc", "kernel-headers", "kernel-devel", "kernel-64k-devel", "wget"]
         if not utils_package.package_install(pkgs, vm_session, timeout=1200):
             self.test.error(f"Unable to install {pkgs} in guest!")
         arch = platform.machine()
@@ -209,13 +211,15 @@ class GPUTest(object):
         :runfile: Install the cuda toolkit using runfile
         """
         if runfile:
+            if not utils_package.package_install(["wget"], vm_session):
+                self.test.error("Unable to install wget in guest!") 
             url = "https://developer.nvidia.com/cuda-downloads"
             page = requests.Session().get(url)
             pkg_download_cmd = re.findall(r"(wget https://developer.download.nvidia.com/compute/cuda/\S+/local_installers/cuda_\S+_linux_sbsa.run)", page.text)
             if not pkg_download_cmd:
                 self.test.error("Unable to get download command!")
             pkg_name = os.path.basename(pkg_download_cmd[0])
-            vm_session.cmd(pkg_download_cmd[0], timeout=240)
+            vm_session.cmd(pkg_download_cmd[0], timeout=600)
             vm_session.cmd(f"sh {pkg_name} --silent", timeout=600)
         else:
             pkgs = "cuda-toolkit"

@@ -2,6 +2,7 @@ import os
 import re
 
 from virttest import virsh
+from virttest import utils_package
 
 from provider.gpu import gpu_base
 
@@ -29,6 +30,8 @@ def run(test, params, env):
         test.log.debug(f'VMXML of {vm_name}:\n{virsh.dumpxml(vm_name).stdout_text}')
 
         test.log.info("TEST_STEP: Verify NUMA topology")
+        if not utils_package.package_install(["numactl"], vm_session):
+            test.error("Unable to install numactl in guest!")
         numa_output = vm_session.cmd_output("numactl --hardware")
         test.log.debug(f'numactl output: {numa_output}')
         gpu_numa_nodes = re.findall(r"node (\d+) size", numa_output)
