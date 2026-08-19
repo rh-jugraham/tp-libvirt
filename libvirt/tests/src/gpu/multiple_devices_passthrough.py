@@ -137,7 +137,13 @@ def run(test, params, env):
             dev_iommu=True if params.get("iommu_dict_2") else False,
         )
         check_points.check_nvidia_smi(test, vm_session)
-        cmdqv_on_num = int(params.get("cmdqv_on_num", "1"))
+        cmdqv_on_num = 0
+        for key in ("cmdqv_dict", "cmdqv_dict_2"):
+            if key == "cmdqv_dict_2" and not params.get("iommu_dict_2"):
+                continue
+            cmdqv_val = params.get(key)
+            if cmdqv_val and eval(cmdqv_val).get("cmdqv") == "on":
+                cmdqv_on_num += 1
         check_points.check_guest_cmdqv_dmesg(test, vm_session, expect_num=cmdqv_on_num)
         libvirt_vfio.check_vfio_pci(gpu_dev_pci, exp_driver="nvgrace_gpu_vfio_pci")
         test.log.info("Verify: GPU driver is nvgrace_gpu_vfio_pci - PASS")
