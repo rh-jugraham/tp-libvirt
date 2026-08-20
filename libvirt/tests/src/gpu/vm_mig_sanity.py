@@ -40,9 +40,8 @@ def run(test, params, env):
 
         test.log.info("TEST_STEP: Clone and build cuda-samples")
         guest_gpu_pci = gpu_base.get_gpu_pci(vm_session)
-        vm_session.cmd_status_output("rm -rf /root/cuda-samples")
-        vm_session.cmd("git clone https://github.com/NVIDIA/cuda-samples --depth 1", timeout=600)
-        vm_session.cmd("dnf install -y git cmake gcc-c++", timeout=600)
+        gpu_test.clone_cuda_samples(vm_session)
+        vm_session.cmd("dnf install -y cmake gcc-c++", timeout=600)
         vm_session.cmd("mkdir /root/cuda-samples/build")
         vm_session.cmd("sed -i 's/add_subdirectory(9_CUDA_Tile)/#add_subdirectory(9_CUDA_Tile)/' /root/cuda-samples/cpp/CMakeLists.txt || true")
         vm_session.cmd("sed -i 's/add_subdirectory(UnifiedMemoryStreams)/#add_subdirectory(UnifiedMemoryStreams)/' /root/cuda-samples/Samples/0_Introduction/CMakeLists.txt || true")

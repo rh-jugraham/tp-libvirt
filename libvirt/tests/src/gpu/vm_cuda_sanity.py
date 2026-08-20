@@ -36,9 +36,7 @@ def run(test, params, env):
         test.log.debug(f'VMXML of {vm_name}:\n{virsh.dumpxml(vm_name).stdout_text}')
 
         test.log.info("TEST_STEP: Clone cuda-samples")
-        vm_session.cmd_status_output("rm -rf /root/cuda-samples")
-        vm_session.cmd("git clone https://github.com/NVIDIA/cuda-samples --depth 1", timeout=600)
-
+        gpu_test.clone_cuda_samples(vm_session)
         test.log.info("TEST_STEP: Install the driver")
         vm_session.cmd("dnf clean metadata", timeout=60)
         gpu_test.install_latest_driver(vm_session)

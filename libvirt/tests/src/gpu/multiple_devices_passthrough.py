@@ -93,9 +93,11 @@ def run(test, params, env):
 
     vm_name = params.get("main_vm", "avocado-vt-vm1")
     vm = env.get_vm(vm_name)
-    nic_dev_type = params.get("dev_type", "")
+    nic_dev_type = params.get("nic_type", "")
     nic_dev_source = params.get("dev_source", "")
 
+    if nic_dev_type == "nic_hostdev" and nic_dev_source.startswith("pf"):
+        gpu_base.verify_pf_not_sole_uplink(test) 
     sriov_test_obj = sriov_base.SRIOVTest(vm, test, params)
     if nic_dev_type == "nic_hostdev" and nic_dev_source.startswith("pf"):
         nic_dev_name = sriov_test_obj.pf_dev_name

@@ -101,6 +101,24 @@ def pci_to_addr(pci_id):
     pci_list = ["0x%s" % x for x in re.split("[.:]", pci_id)]
     return dict(zip(["domain", "bus", "slot", "function"], pci_list + ["pci"]))
 
+def verify_pf_not_sole_uplink(test):
+    """
+    Before SRIOVTest() runs (and touches the PF/creates VFs), verify
+    the host has a genuinely independent physical interface besides
+    the PF that will be selected. Running this first avoids any
+    disruption to host connectivity if the check needs to cancel.
+
+    :param test: test object, for test.cancel()
+    """
+    pf_pci = utils_sriov.get_pf_pci()
+    pf_info = utils_sriov.get_pf_info_by_pci(pf_pci)
+    pf_name = pf_info.get('iface')
+    phy_ifaces, _ = utils_net.get_sorted_net_if()
+    linked = [i for i in utils_net.get_net_if(state="UP") if i in phy_ifaces]
+    if pf_name in linked:
+        linked.remove(pf_name)
+    if not linked:
+        test.cancel("This test needs at least 1 linked interface (excluding PF) available on the host.")
 
 class GPUTest(object):
     """
@@ -145,6 +163,8 @@ class GPUTest(object):
         :param status_error: True if expect not existing, otherwise False
         """
         vm_session = vm.wait_for_login(timeout=240)
+        if not utils_package.package_install(["pciutils"], vm_session):
+            self.test.error("Unable to install pciutils in guest!")
         s, o = vm_session.cmd_status_output("lspci |grep 3D")
         vm_session.close()
         result = process.CmdResult(stdout=o, exit_status=s)
@@ -204,6 +224,17 @@ class GPUTest(object):
                 vm_session.cmd("dnf clean all")
             vm_session.cmd("dnf -y module install nvidia-driver:open-dkms --skip-broken", timeout=600)
 
+    def clone_cuda_samples(self, vm_session):
+        """
+        Install git and clone cuda-samples into the guest
+
+        :param vm_session: vm session object
+        """
+        if not utils_package.package_install(["git"], vm_session):
+            self.test.error("Unable to install git in guest!")
+        vm_session.cmd_status_output("rm -rf /root/cuda-samples")
+        vm_session.cmd("git clone https://github.com/NVIDIA/cuda-samples --depth 1", timeout=600)
+
     def install_cuda_toolkit(self, vm_session, runfile=False):
         """
         Install cuda toolkit
@@ -223,7 +254,7 @@ class GPUTest(object):
             vm_session.cmd(f"sh {pkg_name} --silent", timeout=600)
         else:
             pkgs = "cuda-toolkit"
-            if not utils_package.package_install(pkgs, vm_session):
+            if not utils_package.package_install(pkgs, vm_session, timeout=1200):
                 self.test.fail(f"Unable to install {pkgs} in guest!")
 
     def setup_controllers(self, vmxml, last_index):
